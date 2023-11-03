@@ -1,4 +1,5 @@
 import numpy as np
+import control as ctrl
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
 import cvxpy
@@ -91,53 +92,6 @@ def plot_ee(sminor, smajor, angle, mean):
     plt.title('Error Ellipse From Covariance Matrix')
     plt.show()
 
-def hinfsyn(A, B, C, D, covariance):
-    # Define the optimization variables
-    n = A.shape[1]  # Number of states
-    m = B.shape[1]  # Number of control inputs
-
-    # Define the H-infinity controller gain as a variable
-    K = cvxpy.Variable((m, n))
-
-    # Define the disturbance weighting matrix (tunable parameter to fit problem reqs)
-    W = cvxpy.Parameter((n, n), PSD=True)  # Has to be positive semi-definite
-
-    # Define the covariance matrix Q (representing uncertainties)
-    Q = cvxpy.Parameter((n, n), PSD=True)
-
-    # Define the objective: minimize the worst-case H-infinity norm
-    objective = cvxpy.Minimize(np.norm(np.sqrt(Q) @ (np.eye(n) - A @ K), 'hinf'))
-
-    # Define constraints
-    constraints = [
-        K @ B == C @ K + D,
-        K >= 0,
-        W >> 0,  # W is positive semidefinite
-        cvxpy.bmat([[W, cvxpy.sqrt(Q) @ (A @ K - B)], [cvxpy.transpose(cvxpy.sqrt(Q) @ (A @ K - B)), W]]) >> 0  # New robustness constraint
-        # Ensure that the closed-loop system remains stable and robust to uncertainties represented by Q
-    ]
-    # lhs_1 = np.block([[A.T @ X + X @ A - X @ B @ np.linalg.inv(R) @ B.T @ X + Q, X @ C.T - X @ D],
-    #               [C @ X - D @ X @ B.T, -Y]])
-    # lhs_2 = np.block([[Y, np.zeros((p, n))],
-    #                 [np.zeros((n, p)), X]])
-    # lhs = np.block([[lhs_1, np.zeros((lhs_1.shape[0], p))],
-    #                 [lhs_2]])
-    # rhs = np.zeros(lhs.shape)
-
-
-    # Formulate the optimization problem
-    problem = cvxpy.Problem(objective, constraints)
-
-    # Assign values to the parameters (Q and W)
-    Q.value = covariance
-    W.value = np.eye(n)
-
-    # Solve the problem
-    problem.solve()
-
-    # The optimized H-infinity controller gain is in K.value
-    return K.value
-
 # Observation model 
 C = np.array([[1, 0, 0],
               [0, 1, 0]])
@@ -173,18 +127,33 @@ measurements = np.array([[1.2, 1.9], [3.1, 3.8], [5.0, 6.2]])
 estimated_states = []
 estimated_covariances = []
 
+# Initial control input
+u_hinfty = np.array([0, 0])  # Initial control input
+
 # Kalman filter loop
 for i, z in enumerate(measurements):
 
     # State prediction step
-    A = jacobian_state(x_hat, None)
-    B = jacobian_control(x_hat, None)
-    x_hat_minus = state_transition(x_hat, [v, theta_dot_max])
+    A = jacobian_state(x_hat, u_hinfty)
+    B = jacobian_control(x_hat, u_hinfty)
+    x_hat_minus = state_transition(x_hat, u_hinfty)
     P_minus = np.dot(np.dot(A, P), A.T) + Q
 
+    # # Controllability and Observability
+    # ctrb = ctrl.ctrb(A, B)
+    # is_controllable = np.linalg.matrix_rank(ctrb) == A.shape[0]
+    # print("The system is controllable:", is_controllable)
+    # obsv = ctrl.obsv(A, C)
+    # is_observable = np.linalg.matrix_rank(obsv) == A.shape[0]
+    # print("The system is observable:", is_observable)
+
     # Compute the control input based on the A matrix and H-inf Controller Gain for current covariance
-    K_hinfty = hinfsyn(A, B, C, D, P)
-    u_hinfty = -np.dot(K_hinfty, x_hat)
+    sys = ctrl.ss(A, B, C, D)
+    print(sys)
+    K_hinfty, _, gamma, _ = ctrl.hinfsyn(sys, 2, 2)
+    # p = number of measurements
+    # m = number of control inputs
+    u_hinfty = -np.dot(K_hinfty, x_hat_minus)
 
     # Measurement update step
     L = np.dot(np.dot(P_minus, C.T), np.linalg.inv(np.dot(np.dot(C, P_minus), C.T) + R))
@@ -198,9 +167,9 @@ for i, z in enumerate(measurements):
     # Print the estimated state (x, y, theta), estimated covariance, and semi major and semi minor axis values
     print('----------------------------------------------------')
     print('Iteration: ', i)
-    print("Estimated State (x, y, theta):", x_hat[i])
-    print("Estimated Covariance: ", P[i])
-    sminor, smajor, estimated_angle = error_ell(estimated_covariances[i], estimated_states[i][:2])
+    print("Estimated State (x, y, theta):", x_hat)
+    print("Estimated Covariance: ", P)
+    sminor, smajor, estimated_angle = error_ell(P[:2, :2], x_hat[:2])
     print('H-Infinity Controller: ', u_hinfty)
 
 # Convert the lists of estimated states and covariances to NumPy arrays for easy plotting
